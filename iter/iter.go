@@ -5,8 +5,8 @@ import (
 	"context"
 )
 
-// Iter is a lazy iterator for values of type `T`. It returns the next element `T`, and a `bool` indicating whether an
-// element was returned. When the iterator is drained, it returns the zero value for type `T`, along with `false`.
+// Iter is a lazy, single-use iterator for values of type `T`. When an element is ready, it is returned with the `bool`
+// value true. When the iterator is drained, the zero value of `T` is returned with a `bool` value of false.
 type Iter[T any] func() (T, bool)
 
 //// Iterator creators
@@ -34,23 +34,25 @@ func Of[T any](ts ...T) Iter[T] {
 	}
 }
 
-// Range returns an iterator containing all values from `from` to `to`, inclusive. This is a lazy operation, and returns
-// immediately.
-func Range[T constraints.Integer](from, to T) Iter[T] {
-	next := from
-	return func() (T, bool) {
-		if next > to {
-			return 0, false
-		}
+// Numeric
+type Numeric interface {
+	constraints.Integer | constraints.Float | constraints.Complex
+}
 
+// Incr returns an iterator of an infinite sequence, starting with `first`, and incrementing each successive value by
+// `step`. This is a lazy operation, and returns immediately.
+func Incr[T Numeric](first, step T) Iter[T] {
+	next := first
+	return func() (T, bool) {
 		current := next
-		next++
+		next += step
 		return current, true
 	}
 }
 
 // Receive returns an iterator that yields values from the given channel. This is a lazy operation, and returns
-// immediately.
+// immediately. The final operation on this iterator may block until the channel is closed. If context-sensitive
+// cancellation is needed, use ReceiveCtx instead.
 func Receive[T any](ch <-chan T) Iter[T] {
 	return func() (T, bool) {
 		t, ok := <-ch
@@ -104,6 +106,27 @@ func (src Iter[T]) Filter(f func(T) bool) Iter[T] {
 				return t, true
 			}
 		}
+	}
+}
+
+// While returns an iterator that yields the elements of `src` until an element is encountered that fails the provided
+// predicate function. This is a lazy operation, and returns immediately.
+func (src Iter[T]) While(f func(T) bool) Iter[T] {
+	var done bool
+	return func() (T, bool) {
+		if done {
+			var zero T
+			return zero, false
+		}
+
+		t, ok := src()
+		if !ok || !f(t) {
+			done = true
+			var zero T
+			return zero, false
+		}
+
+		return t, true
 	}
 }
 
@@ -166,7 +189,7 @@ func (src Iter[T]) Skip(n int) Iter[T] {
 	}
 }
 
-// Limit returns an iterator that yields at most `n` elements from the `src`. This is a lazy operation, and returns
+// Limit returns an iterator that yields at most `n` elements from `src`. This is a lazy operation, and returns
 // immediately.
 func (src Iter[T]) Limit(n int) Iter[T] {
 	var count int

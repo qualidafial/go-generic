@@ -2,26 +2,28 @@ package iter_test
 
 import (
 	"constraints"
-	"reflect"
+	"context"
 	"testing"
 
 	"github.com/qualidafial/go-generic/iter"
+	"github.com/qualidafial/go-generic/pred"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestEmpty(t *testing.T) {
-	assertContains[int](t, iter.Empty[int](), nil...)
-	assertContains[string](t, iter.Empty[string](), nil...)
+	assertIter(t, iter.Empty[int]()).EOF()
+	assertIter(t, iter.Empty[string]()).EOF()
 }
 
 func TestOf(t *testing.T) {
-	assertContains(t, iter.Of(1, 2, 3), 1, 2, 3)
-	assertContains(t, iter.Of("foo", "bar", "baz"), "foo", "bar", "baz")
+	assertIter(t, iter.Of(1, 2, 3)).ContainsExactly(1, 2, 3)
+	assertIter(t, iter.Of("foo", "bar", "baz")).ContainsExactly("foo", "bar", "baz")
 }
 
-func TestRange(t *testing.T) {
-	assertContains(t, iter.Range(10, 15), 10, 11, 12, 13, 14, 15)
-	assertContains[int](t, iter.Range[int](15, 10), nil...)
-	assertContains(t, iter.Range(0, 0), 0)
+func TestIncr(t *testing.T) {
+	assertIter(t, iter.Incr[int](1, 1).Limit(5)).ContainsExactly(1, 2, 3, 4, 5)
+	assertIter(t, iter.Incr[float64](0, 0.25).While(pred.LE(1.0))).ContainsExactly(0, 0.25, 0.5, 0.75, 1.0)
+	assertIter(t, iter.Incr[complex64](0+1i, 1+2i).Limit(3)).ContainsExactly(0+1i, 1+3i, 2+5i)
 }
 
 func TestReceive(t *testing.T) {
@@ -33,17 +35,55 @@ func TestReceive(t *testing.T) {
 		close(ch)
 	}()
 
-	assertContains(t, iter.Receive(ch), 1, 2, 3)
+	assertIter(t, iter.Receive(ch)).ContainsExactly(1, 2, 3)
+}
+
+func TestGenerate(t *testing.T) {
+	var prev, next = 0, 1
+	fib := func() int {
+		current := next
+		prev, next = next, prev+next
+		return current
+	}
+	assertIter(t, iter.Generate[int](fib)).ContainsNext(1, 1, 2, 3, 5, 8, 13)
+}
+
+func TestIter_Context_Canceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	it := iter.Incr(1, 1).Context()
+	assertIterCtx(t, it).
+		ContainsNext(ctx, 1, 2, 3, 4, 5).
+		Do(cancel).
+		ContextCanceled(ctx)
+}
+
+func TestIter_Context_Complete(t *testing.T) {
+	ctx := context.Background()
+
+	it := iter.Incr(1, 1).Limit(5).Context()
+	assertIterCtx(t, it).
+		ContainsExactly(ctx, 1, 2, 3, 4, 5)
 }
 
 func TestIter_Filter(t *testing.T) {
-	assertContains(t, iter.Of(1, 1, 2, 3, 5, 8, 13, 21, 34).Filter(isEven), 2, 8, 34)
+	assertIter(t, iter.Generate(fibonacci()).Filter(isEven)).
+		ContainsNext(2, 8, 34)
 
 	var short = func(s string) bool {
 		return len(s) < 5
 	}
-	assertContains(t, iter.Of("foo", "bar", "riboflavin", "echo").Filter(short),
-		"foo", "bar", "echo")
+	assertIter(t, iter.Of("foo", "bar", "riboflavin", "echo").Filter(short)).
+		ContainsExactly("foo", "bar", "echo")
+}
+
+func TestIter_While(t *testing.T) {
+	assertIter(t, iter.Generate(fibonacci()).While(pred.LT(50))).
+		ContainsExactly(1, 1, 2, 3, 5, 8, 13, 21, 34)
+
+	assertIter(t, iter.Generate(fibonacci()).While(pred.LT(0))).
+		EOF()
 }
 
 func TestMap(t *testing.T) {
@@ -53,50 +93,56 @@ func TestMap(t *testing.T) {
 		}
 	}
 
-	assertContains(t, iter.Map(iter.Of(1, 2, 3), add(10)), 11, 12, 13)
+	assertIter(t, iter.Map(iter.Of(1, 2, 3), add(10))).
+		ContainsExactly(11, 12, 13)
 
-	assertContains(t, iter.Map(iter.Of(1, 2, 3), add(100)), 101, 102, 103)
+	assertIter(t, iter.Map(iter.Of(1, 2, 3), add(100))).
+		ContainsExactly(101, 102, 103)
 }
 
 func TestFlatMap(t *testing.T) {
-	assertContains(t, iter.FlatMap(iter.Of("a", "b", "c"), nTimes[string](2)),
-		"a", "a", "b", "b", "c", "c")
-	assertContains(t, iter.FlatMap(iter.Of("a", "b", "c"), nTimes[string](3)),
-		"a", "a", "a", "b", "b", "b", "c", "c", "c")
+	assertIter(t, iter.FlatMap(iter.Of("a", "b", "c"), nTimes[string](2))).
+		ContainsExactly("a", "a", "b", "b", "c", "c")
+	assertIter(t, iter.FlatMap(iter.Of("a", "b", "c"), nTimes[string](3))).
+		ContainsExactly("a", "a", "a", "b", "b", "b", "c", "c", "c")
 }
 
 func TestIter_Skip(t *testing.T) {
-	assertContains(t, iter.Range(1, 10).Skip(5), 6, 7, 8, 9, 10)
-	assertContains(t, iter.Range(0, 1).Skip(1), 1)
-	assertContains(t, iter.Range(0, 1).Skip(2), nil...)
-	assertContains(t, iter.Range(0, 1).Skip(10), nil...)
+	assertIter(t, iter.Of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10).Skip(5)).
+		ContainsExactly(6, 7, 8, 9, 10)
+	assertIter(t, iter.Of(0, 1).Skip(1)).
+		ContainsExactly(1)
+	assertIter(t, iter.Of(0, 1).Skip(2)).
+		EOF()
+	assertIter(t, iter.Of(0, 1).Skip(10)).
+		EOF()
 }
 
 func TestIter_Limit(t *testing.T) {
-	assertContains(t, fibonacci().Limit(5), 1, 1, 2, 3, 5)
+	assertIter(t, iter.Generate(fibonacci()).Limit(5)).
+		ContainsExactly(1, 1, 2, 3, 5)
 }
 
 func TestIter_Tee(t *testing.T) {
-	var captured []int
+	var actual []int
 	capture := func(i int) {
-		captured = append(captured, i)
+		actual = append(actual, i)
 	}
-	assertContains(t, iter.Range(0, 5).Tee(capture), 0, 1, 2, 3, 4, 5)
+	assertIter(t, iter.Of(1, 2, 3, 4, 5).Tee(capture)).
+		ContainsExactly(1, 2, 3, 4, 5)
 
-	expected := []int{0, 1, 2, 3, 4, 5}
-	if !reflect.DeepEqual(captured, expected) {
-		t.Errorf("Expected to capture %v but got %v", expected, captured)
-	}
+	expected := []int{1, 2, 3, 4, 5}
+	assert.Equal(t, expected, actual)
 }
 
 func TestIter_Partition(t *testing.T) {
-	evens, odds := iter.Range(0, 10).Partition(isEven)
-	assertContains(t, evens, 0, 2, 4, 6, 8, 10)
-	assertContains(t, odds, 1, 3, 5, 7, 9)
+	evens, odds := iter.Of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10).Partition(isEven)
+	assertIter(t, evens).ContainsExactly(2, 4, 6, 8, 10)
+	assertIter(t, odds).ContainsExactly(1, 3, 5, 7, 9)
 
-	evens, odds = iter.Range(0, 10).Partition(isEven)
-	assertContains(t, odds, 1, 3, 5, 7, 9)
-	assertContains(t, evens, 0, 2, 4, 6, 8, 10)
+	evens, odds = iter.Of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10).Partition(isEven)
+	assertIter(t, odds).ContainsExactly(1, 3, 5, 7, 9)
+	assertIter(t, evens).ContainsExactly(2, 4, 6, 8, 10)
 }
 
 func TestIter_ForEach(t *testing.T) {
@@ -105,17 +151,13 @@ func TestIter_ForEach(t *testing.T) {
 		actual = append(actual, i)
 	})
 	expected := []int{1, 2, 3}
-	if !reflect.DeepEqual(expected, actual) {
-		t.Errorf("expected %v but got %v", expected, actual)
-	}
+	assert.Equal(t, expected, actual)
 }
 
 func TestIter_Slice(t *testing.T) {
 	actual := iter.Of(1, 2, 3).Slice()
 	expected := []int{1, 2, 3}
-	if !reflect.DeepEqual(expected, actual) {
-		t.Errorf("expected %v but got %v", expected, actual)
-	}
+	assert.Equal(t, expected, actual)
 }
 
 func TestFold(t *testing.T) {
@@ -144,10 +186,8 @@ func TestFold(t *testing.T) {
 
 	for _, test := range tests {
 		actual := iter.Fold(iter.Of(test.input...), test.seed, test.f)
-		if actual != test.expected {
-			t.Errorf("Expected %v of %v, starting from %v to be %v but got %v",
-				test.operation, test.input, test.seed, test.expected, actual)
-		}
+		assert.Equal(t, test.expected, actual, "Expected %v of %v, starting from %v to be %v but got %v",
+			test.operation, test.input, test.seed, test.expected, actual)
 	}
 }
 
@@ -163,46 +203,64 @@ func TestIter_Send(t *testing.T) {
 		actual = append(actual, s)
 	}
 
-	assertEqual(t, actual, []string{"foo", "bar", "baz"})
+	assert.Equal(t, []string{"foo", "bar", "baz"}, actual)
 }
 
-func TestIter_SendReceive(t *testing.T) {
-	ch := make(chan string)
-	go func() {
-		iter.Of("foo", "bar", "baz").Send(ch)
-		close(ch)
-	}()
-
-	assertContains(t, iter.Receive(ch), "foo", "bar", "baz")
+func TestIter_AnyMatch(t *testing.T) {
+	assert.True(t, iter.Incr(0, 1).Limit(1000).AnyMatch(pred.GT(100)))
+	assert.False(t, iter.Incr(0, 1).Limit(10).AnyMatch(pred.LT(0)))
 }
 
-func assertContains[T comparable](t *testing.T, src iter.Iter[T], expected ...T) {
-	for i, expect := range expected {
-		actual, ok := src()
-		if !ok {
-			t.Errorf("expected element %d to be %v but ran out of elements", i+1, expect)
-		} else if actual != expect {
-			t.Errorf("expected element %d to be %v but got %v", i+1, expect, actual)
-		}
-	}
-	if actual, ok := src(); ok {
-		t.Errorf("expected no more elements but got %v (and possibly more)", actual)
+func TestIter_AllMatch(t *testing.T) {
+	assert.True(t, iter.Incr(0, 1).Limit(10).AllMatch(pred.LT(10)))
+	assert.False(t, iter.Incr(0, 1).Limit(10).AllMatch(pred.LT(5)))
+}
+
+func assertIter[T any](t *testing.T, src iter.Iter[T]) *IterAssert[T] {
+	return &IterAssert[T]{
+		t:   t,
+		src: src,
 	}
 }
 
-func assertEqual[T any](t *testing.T, actual, expected T) {
-	if !reflect.DeepEqual(expected, actual) {
-		t.Errorf("expected %v but got %v", expected, actual)
-	}
+type IterAssert[T any] struct {
+	t   *testing.T
+	src iter.Iter[T]
 }
 
-func fibonacci() iter.Iter[int] {
+func (a *IterAssert[T]) ContainsNext(elements ...T) *IterAssert[T] {
+	for _, expected := range elements {
+		actual, ok := a.src()
+		assert.Equal(a.t, expected, actual)
+		assert.True(a.t, ok)
+	}
+
+	return a
+}
+
+func (a *IterAssert[T]) ContainsExactly(elements ...T) *IterAssert[T] {
+	return a.ContainsNext(elements...).EOF()
+}
+
+func (a *IterAssert[T]) Do(f func()) *IterAssert[T] {
+	f()
+	return a
+}
+
+func (a *IterAssert[T]) EOF() *IterAssert[T] {
+	actual, ok := a.src()
+	assert.Zero(a.t, actual)
+	assert.False(a.t, ok)
+	return a
+}
+
+func fibonacci() func() int {
 	prev, next := 0, 1
-	return iter.Generate(func() int {
-		curr := next
+	return func() int {
+		current := next
 		prev, next = next, prev+next
-		return curr
-	})
+		return current
+	}
 }
 
 type Numeric interface {

@@ -5,10 +5,10 @@ import (
 	"errors"
 )
 
-// IterCtx is a context-aware lazy iterator for values of type `T`. IterCtx differs from Iter in iteration can be
-// interrupted by the expiration or cancellation of a context provided context. It returns the next element `T`, a
-// `bool` indicating whether an element was returned, and the context error, if any. If the context expires or is
-// canceled, returns the zero value of `T`, false, and the context error.
+// IterCtx is a context-aware, lazy, single-use iterator for values of type `T`. IterCtx, unlike Iter, can be
+// interrupted by the expiration or cancellation of a provided context. When an element is ready, it is returned with
+// an error value of nil. When the iterator is drained, the zero value of `T` is returned with an error value of
+// `iter.EOF`. When the context expires or is canceled, the zero value of `T` is returned with the context error.
 type IterCtx[T any] func(ctx context.Context) (T, error)
 
 // EOF is returned by an IterCtx that has run out of elements.
@@ -52,8 +52,35 @@ func (src IterCtx[T]) Filter(f func(T) bool) IterCtx[T] {
 	}
 }
 
-// MapCtx returns an iterator that yields the return value of the provided mapper function for each element of `src`. This
-// is a lazy operation, and returns immediately.
+// While returns an iterator that yields the elements of `src` until an element is encountered that fails the provided
+// predicate function, or the context expires or is canceled. This is a lazy operation, and returns immediately.
+func (src IterCtx[T]) While(f func(T) bool) IterCtx[T] {
+	var done bool
+	return func(ctx context.Context) (T, error) {
+		if done {
+			var zero T
+			return zero, EOF
+		}
+
+		t, err := src(ctx)
+		if err != nil {
+			done = true
+			var zero T
+			return zero, err
+		}
+
+		if !f(t) {
+			done = true
+			var zero T
+			return zero, EOF
+		}
+
+		return t, nil
+	}
+}
+
+// MapCtx returns an iterator that yields the return value of the provided mapper function for each element of `src`.
+// This is a lazy operation, and returns immediately.
 func MapCtx[T any, U any](src IterCtx[T], f func(T) U) IterCtx[U] {
 	return func(ctx context.Context) (U, error) {
 		t, err := src(ctx)
@@ -115,14 +142,14 @@ func (src IterCtx[T]) Skip(n int) IterCtx[T] {
 	}
 }
 
-// Limit returns an iterator that yields at most `n` elements from the `src`. This is a lazy operation, and returns
+// Limit returns an iterator that yields at most `n` elements from `src`. This is a lazy operation, and returns
 // immediately.
 func (src IterCtx[T]) Limit(n int) IterCtx[T] {
 	var count int
 	return func(ctx context.Context) (T, error) {
 		if count >= n {
 			var zero T
-			return zero, ctx.Err()
+			return zero, EOF
 		}
 
 		count++
@@ -152,44 +179,56 @@ func (src IterCtx[T]) Partition(f func(T) bool) (IterCtx[T], IterCtx[T]) {
 	var passBuf, failBuf []T
 
 	passIter := func(ctx context.Context) (T, error) {
-		if len(passBuf) > 0 {
-			next := passBuf[0]
-			passBuf = passBuf[1:]
-			return next, ctx.Err()
-		}
+		select {
+		case <-ctx.Done():
+			var zero T
+			return zero, ctx.Err()
+		default:
+			if len(passBuf) > 0 {
+				next := passBuf[0]
+				passBuf = passBuf[1:]
+				return next, ctx.Err()
+			}
 
-		for {
-			t, err := src(ctx)
-			if err != nil {
-				var zero T
-				return zero, err
+			for {
+				t, err := src(ctx)
+				if err != nil {
+					var zero T
+					return zero, err
+				}
+				if !f(t) {
+					failBuf = append(failBuf, t)
+					continue
+				}
+				return t, nil
 			}
-			if !f(t) {
-				failBuf = append(failBuf, t)
-				continue
-			}
-			return t, nil
 		}
 	}
 
 	failIter := func(ctx context.Context) (T, error) {
-		if len(failBuf) > 0 {
-			next := failBuf[0]
-			failBuf = failBuf[1:]
-			return next, ctx.Err()
-		}
+		select {
+		case <-ctx.Done():
+			var zero T
+			return zero, ctx.Err()
+		default:
+			if len(failBuf) > 0 {
+				next := failBuf[0]
+				failBuf = failBuf[1:]
+				return next, ctx.Err()
+			}
 
-		for {
-			t, err := src(ctx)
-			if err != nil {
-				var zero T
-				return zero, err
+			for {
+				t, err := src(ctx)
+				if err != nil {
+					var zero T
+					return zero, err
+				}
+				if f(t) {
+					passBuf = append(passBuf, t)
+					continue
+				}
+				return t, nil
 			}
-			if f(t) {
-				passBuf = append(passBuf, t)
-				continue
-			}
-			return t, nil
 		}
 	}
 
@@ -288,8 +327,8 @@ func (src IterCtx[T]) AnyMatch(ctx context.Context, f func(T) bool) (bool, error
 }
 
 // AllMatch returns true if all the elements of `src` pass the provided predicate function. This operation blocks until
-// a non-matching element is encountered, the iterator is exhausted, or the context expires or is canceled. Returns the
-// context error, if any.
+// a non-matching element is encountered, the iterator is exhausted, or until the context expires or is canceled.
+// Returns the context error, if any.
 func (src IterCtx[T]) AllMatch(ctx context.Context, f func(T) bool) (bool, error) {
 	for {
 		t, err := src(ctx)
