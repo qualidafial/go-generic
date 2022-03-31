@@ -1,8 +1,9 @@
 package iter
 
 import (
-	"constraints"
 	"context"
+
+	"golang.org/x/exp/constraints"
 )
 
 // Iter is a lazy, single-use iterator for values of type `T`. When an element is ready, it is returned with the `bool`

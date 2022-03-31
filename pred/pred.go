@@ -1,7 +1,7 @@
 package pred
 
 import (
-	"constraints"
+	"golang.org/x/exp/constraints"
 )
 
 // LT returns a predicate function that returns whether an ordered value is less than `t`.

@@ -1,9 +1,10 @@
 package iter_test
 
 import (
-	"constraints"
 	"context"
 	"testing"
+
+	"golang.org/x/exp/constraints"
 
 	"github.com/qualidafial/go-generic/iter"
 	"github.com/qualidafial/go-generic/pred"
