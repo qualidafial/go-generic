@@ -12,13 +12,17 @@ import (
 )
 
 func TestEmpty(t *testing.T) {
-	assertIter(t, iter.Empty[int]()).EOF()
-	assertIter(t, iter.Empty[string]()).EOF()
+	assertIter(t, iter.Empty[int]()).
+		EOF()
+	assertIter(t, iter.Empty[string]()).
+		EOF()
 }
 
 func TestOf(t *testing.T) {
-	assertIter(t, iter.Of(1, 2, 3)).ContainsExactly(1, 2, 3)
-	assertIter(t, iter.Of("foo", "bar", "baz")).ContainsExactly("foo", "bar", "baz")
+	assertIter(t, iter.Of(1, 2, 3)).
+		ContainsExactly(1, 2, 3)
+	assertIter(t, iter.Of("foo", "bar", "baz")).
+		ContainsExactly("foo", "bar", "baz")
 }
 
 func TestIncr(t *testing.T) {
